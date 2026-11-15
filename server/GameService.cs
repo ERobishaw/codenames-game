@@ -64,8 +64,15 @@ public sealed class GameService(IHubContext<GameHub> hub)
             throw new HubException("Choose a valid team and role.");
         if (game.Started && player.Role != "spectator") throw new HubException("Players cannot change roles after the game starts.");
         if (game.Started && role == "spymaster") throw new HubException("Spymasters must join before the game starts.");
-        if (role == "spymaster" && game.Players.Values.Any(p => p != player && p.Team == team && p.Role == role))
-            throw new HubException("That team already has a spymaster.");
+        var existingSpymaster = role == "spymaster"
+            ? game.Players.Values.FirstOrDefault(p => p != player && p.Team == team && p.Role == role)
+            : null;
+        if (existingSpymaster != null)
+        {
+            if (existingSpymaster.Connections.Count > 0) throw new HubException("That team already has a spymaster.");
+            existingSpymaster.Team = "spectator";
+            existingSpymaster.Role = "spectator";
+        }
         player.Team = team;
         player.Role = role;
     });
@@ -100,6 +107,7 @@ public sealed class GameService(IHubContext<GameHub> hub)
         if (game.Cards.Any(c => !c.Revealed && string.Equals(c.Word, word, StringComparison.OrdinalIgnoreCase)))
             throw new HubException("The clue cannot be an unrevealed board word.");
         game.GuessesLeft = number + 1;
+        game.GuessesMade = 0;
         game.Clue = $"{word} · {number}";
         game.Log.Add($"{Cap(game.Turn)} clue: {word} ({number}).");
     });
@@ -112,6 +120,7 @@ public sealed class GameService(IHubContext<GameHub> hub)
         var card = game.Cards[index];
         card.Revealed = true;
         game.GuessesLeft--;
+        game.GuessesMade++;
         game.Log.Add($"{Cap(game.Turn)} revealed {card.Word} ({card.Color}).");
         if (card.Color == "assassin")
             Finish(game, OtherTeam(game.Turn), "The assassin was revealed.");
@@ -125,6 +134,7 @@ public sealed class GameService(IHubContext<GameHub> hub)
     {
         RequireTurn(game, player, "operative");
         if (game.GuessesLeft == 0) throw new HubException("There is no active clue.");
+        if (game.GuessesMade == 0) throw new HubException("Reveal at least one card before ending your turn.");
         game.Log.Add($"{Cap(game.Turn)} ended their turn.");
         NextTurn(game);
     });
@@ -161,7 +171,7 @@ public sealed class GameService(IHubContext<GameHub> hub)
         {
             var state = new
             {
-                game.Code, game.Started, game.Turn, game.Winner, game.Clue, game.GuessesLeft,
+                game.Code, game.Started, game.Turn, game.Winner, game.Clue, game.GuessesLeft, game.GuessesMade,
                 You = new { player.Name, player.Team, player.Role },
                 Players = game.Players.Values.Select(p => new { p.Name, p.Team, p.Role, Online = p.Connections.Count > 0 }).ToArray(),
                 Cards = game.Cards.Select(c => new { c.Word, c.Revealed, Color = c.Revealed || player.Role == "spymaster" || game.Winner != null ? c.Color : null }).ToArray(),
@@ -207,6 +217,7 @@ internal sealed class Game(string code)
     public string? Winner { get; set; }
     public string? Clue { get; set; }
     public int GuessesLeft { get; set; }
+    public int GuessesMade { get; set; }
 }
 
 internal sealed class Player(string name)
